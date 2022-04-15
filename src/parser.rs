@@ -1,122 +1,215 @@
+use crate::lexer::Token;
+use crate::{ast::*, SourceId, SourceQuery};
 use chumsky::prelude::*;
-use crate::ast::{Expr, Ident, Type, FnDefn};
-use crate::lexer::{Token, lexer};
+use std::sync::Arc;
 
-trait Lispy<O, E: chumsky::Error<Token>> 
+trait Lispy<O, E: chumsky::Error<Token>>
 where
     Self: Sized,
 {
-
-    fn parens(self) -> chumsky::combinator::DelimitedBy<Self, BoxedParser<'static, Token, Token, E>, BoxedParser<'static, Token, Token, E>, Token, Token>;
+    fn parens(
+        self,
+    ) -> chumsky::combinator::DelimitedBy<
+        Self,
+        BoxedParser<'static, Token, Token, E>,
+        BoxedParser<'static, Token, Token, E>,
+        Token,
+        Token,
+    >;
 }
 
-impl<T, O, E> Lispy<O, E> for T 
+impl<T, O, E> Lispy<O, E> for T
 where
-    T: Parser<Token, O, Error=E>,
+    T: Parser<Token, O, Error = E>,
     E: chumsky::Error<Token> + 'static,
 {
-    fn parens(self) ->  chumsky::combinator::DelimitedBy<Self, BoxedParser<'static, Token, Token, E>, BoxedParser<'static, Token, Token, E>, Token, Token> {
+    fn parens(
+        self,
+    ) -> chumsky::combinator::DelimitedBy<
+        Self,
+        BoxedParser<'static, Token, Token, E>,
+        BoxedParser<'static, Token, Token, E>,
+        Token,
+        Token,
+    > {
         self.delimited_by(just(Token::LParen).boxed(), just(Token::RParen).boxed())
     }
 }
 
-pub type Span = std::ops::Range<usize>;
-
-pub type Spanned<T> = (T, Span);
-
-fn expr_parser() -> impl Parser<Token, Expr, Error=Simple<Token>> {
-    recursive(|expr: Recursive<Token, Expr, Simple<Token>>| {
+fn expr_parser<'a>(
+    db: &'a dyn AstQuery,
+) -> impl Parser<Token, ExprId, Error = Simple<Token, Span>> + 'a {
+    recursive(|expr: Recursive<Token, ExprId, Simple<Token, Span>>| {
         let val = select! {
             Token::NumLit(num) => Expr::Li32(num as i32),
             Token::StrLit(str) => Expr::LStr(str),
-            Token::Ident(id) => Expr::Var(id.into())
-        }.labelled("value");
+            Token::Ident(id) => {
+                let id = db.intern_ident_data(IdentData::new(id));
+                Expr::Var(id)
+            }
+        }
+        .labelled("value");
 
-        let sexpr = expr.repeated()
+        let sexpr = expr
+            .repeated()
             .at_least(1)
-            .delimited_by(just(Token::LParen), just(Token::RParen))
+            .parens()
             .labelled("s-expr")
-            .collect::<Vec<_>>()
-            .map(Expr::Sexpr);
+            .map(Expr::Sexpr)
+            .boxed();
 
         val.or(sexpr)
-           .recover_with(nested_delimiters(Token::LParen, Token::RParen, [], |span| Expr::Error))
+            .map_with_span(|kind, meta| db.intern_expr_node(Node { kind, meta }))
     })
     .boxed()
 }
 
-fn type_parser() -> impl Parser<Token, Type, Error=Simple<Token>> {
-    let atom_ty = filter_map(|span, t| match t {
-        Token::Ident(s) if s == "i32" => Ok(Type::Ti32),
-        _ => Err(Simple::custom(span, "expected type to be one of { i32 }")),
-    });
+fn type_parser<'a>(
+    db: &'a dyn AstQuery,
+) -> impl Parser<Token, TypeId, Error = Simple<Token, Span>> + 'a {
+    let atom_ty = filter_map(|span: Span, t| match t {
+        Token::Ident(s) if s == "i32" => Ok((Type::Ti32, span)),
+        _ => Err(Simple::custom(span, "Expected type to be one of { i32 }")),
+    })
+    .labelled("atomic type");
 
     let typ = just(Token::FnArrow)
-        .ignore_then(atom_ty.repeated().at_least(2).map(|tys| {
-            tys.into_iter().rev().reduce(|a, b| Type::TFun(Box::new(a), Box::new(b))).unwrap()
-        }))
-        .parens();
+        .ignore_then(atom_ty)
+        .then(atom_ty.repeated().at_least(1))
+        .map(|(a, b)| (b, a))
+        .foldr(|(param, param_span), (ret, ret_span)| {
+            let param_id = db.intern_type_node(Node {
+                kind: param,
+                meta: param_span.into(),
+            });
+            let ret_id = db.intern_type_node(Node {
+                kind: ret,
+                meta: ret_span.into(),
+            });
+            (Type::TFun(param_id, ret_id), param_span + ret_span)
+        })
+        .parens()
+        .labelled("function type")
+        .recover_with(nested_delimiters(
+            Token::LParen,
+            Token::RParen,
+            [],
+            |span| (Type::THole, span),
+        ))
+        .boxed();
 
-    typ.or(atom_ty).boxed()
+    typ.or(atom_ty)
+        .map(|(kind, meta)| db.intern_type_node(Node { kind, meta }))
+        .boxed()
 }
 
-
-fn fn_parser() -> impl Parser<Token, FnDefn, Error=Simple<Token>> {
+fn fn_parser<'a>(
+    db: &'a dyn AstQuery,
+) -> impl Parser<Token, FnId, Error = Simple<Token, Span>> + 'a {
     let ident = select! {
-        Token::Ident(l) => l.into()
+        Token::Ident(l) => db.intern_ident_data(IdentData::new(l))
     };
     let arg_list = ident
-                      .then(type_parser())
-                      .repeated()
-                      .parens();
+        .then(type_parser(db))
+        .parens()
+        .repeated()
+        .parens()
+        .labelled("arg list")
+        .boxed();
 
-    just(Token::FunctionKw)
+    just(Token::FnKw)
         .ignore_then(ident)
         .then(arg_list)
-        .then(expr_parser())
-        .map_with_span(|((name, args), body), _span| FnDefn { name, args, body })
+        .then(expr_parser(db))
+        .parens()
+        .map_with_span(|((name, args), body), meta| {
+            db.intern_fn_defn(Node {
+                kind: FnDefn { name, args, body },
+                meta,
+            })
+        })
+        .labelled("function")
         .boxed()
 }
 
 #[derive(PartialEq, Debug)]
 pub enum ParseDefn {
-    Function(FnDefn),
+    Function(FnId),
 }
 
-#[derive(PartialEq, Debug)]
-pub struct ParseModule(Vec<Defn>);
-
-fn module_parser() -> impl Parser<Token, ParseModule, Simple<Token>> {
-    let fn_defn = fn_parser().map(ParseDefn::Function);
+fn module_parser<'a>(
+    db: &'a dyn AstQuery,
+) -> impl Parser<Token, Module, Error = Simple<Token, Span>> + 'a {
+    let fn_defn = fn_parser(db).map(ParseDefn::Function);
 
     let defn = fn_defn.boxed();
 
-    defn.repeated()
-        .map(ParseModule)
+    defn.repeated().at_least(1).map(|defns| {
+        defns.into_iter().fold(Module::empty(), |mut module, defn| {
+            match defn {
+                ParseDefn::Function(id) => module.fns.push(id),
+            };
+            module
+        })
+    })
 }
 
-fn parse_with<T, E>(p: impl Parser<Token, T, Error=E>, input: &str) -> Result<T, Vec<E>> 
-where
-    E: chumsky::Error<Token, Span=Span>,
-{
-    let end = input.len();
-    let tokens = lexer().parse(input).map_err(|_| vec![])?;
-
-    let stream: chumsky::Stream<'_, Token, Span, std::vec::IntoIter<(Token, Span)>> = chumsky::Stream::from_iter(end..end + 1, tokens.into_iter());
-
-    p.parse(stream)
+#[salsa::query_group(ParserStorage)]
+pub trait ParserQuery: crate::ast::AstQuery + crate::lexer::Lexer {
+    fn parse(&self, key: crate::SourceId) -> Arc<Module>;
 }
 
-fn parse(input: &str) -> Result<ParseModule, Vec<Simple<Token>>> {
-    parse_with(module_parser(), input)
+fn parse(db: &dyn ParserQuery, key: crate::SourceId) -> Arc<Module> {
+    let tokens = db.lex(key);
+    let end = db.source_length(key);
+    let mod_res = module_parser(db).parse(chumsky::Stream::from_iter(
+        Span::new(key, end..end + 1),
+        tokens.iter().cloned(),
+    ));
+    match mod_res {
+        Ok(m) => Arc::new(m),
+        Err(e) => {
+            let report = crate::build_report(&key, e);
+            let cache = DbCache(db, None);
+            report.eprint(cache).unwrap();
+            panic!()
+        }
+    }
 }
 
+// This is a terrible hack
+struct DbCache<'a>(&'a dyn SourceQuery, Option<Arc<ariadne::Source>>);
+impl<'d> ariadne::Cache<SourceId> for DbCache<'d> {
+    fn fetch(&mut self, id: &SourceId) -> Result<&ariadne::Source, Box<dyn std::fmt::Debug + '_>> {
+        self.1 = Some(self.0.ariadne_source(*id));
+        Ok(self.1.as_ref().unwrap().as_ref())
+    }
+
+    fn display<'a>(&self, id: &'a SourceId) -> Option<Box<dyn std::fmt::Display + 'a>> {
+        Some(Box::new(format!(
+            "{}",
+            self.0.lookup_intern_source_data(*id).path.display()
+        )))
+    }
+}
+/*
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::Expr::*;
-    use crate::{var, sexpr};
-    
+    use crate::ast::{Expr::*, IdentData};
+
+    fn parse_with<T, E>(p: impl Parser<Token, T, Error=E>, input: &str) -> Result<T, Vec<E>>
+    where
+        E: chumsky::Error<Token, Span=Span>,
+    {
+        let end = input.len();
+        let tokens = lexer().parse(input).map_err(|_| vec![])?;
+
+        let stream/*: chumsky::Stream<'_, Token, Span, std::vec::IntoIter<(Token, Span)>>*/ = chumsky::Stream::from_iter(end..end + 1, tokens.into_iter());
+
+        p.parse(stream)
+    }
+
     #[test]
     fn parse_lit_i32() {
         assert_eq!(parse_with(expr_parser(), "3"), Ok(Expr::Li32(3)))
@@ -145,10 +238,11 @@ mod tests {
 
     #[test]
     fn parse_fn() {
-        assert_eq!(parse_with(fn_parser(), "(fn id ((x i32)) x)"), Ok(Defn::Function { 
-            name: Ident::new("id"),
-            args: vec![(Ident::new("x"), Type::Ti32)],
+        assert_eq!(parse_with(fn_parser(), "(fn id ((x i32)) x)"), Ok(FnDefn {
+            name: IdentData::new("id"),
+            args: vec![(IdentData::new("x"), Type::Ti32)],
             body: var!("x"),
         }))
     }
 }
+*/

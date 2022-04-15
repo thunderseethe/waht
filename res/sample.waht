@@ -1,0 +1,7 @@
+(fn s ((x i32) (y i32) (z i32)) (x z (y z)))
+
+(fn k ((x i32) (y i32)) y)
+
+(fn i ((x i32)) x)
+
+(fn apply ((f (-> i32 i32)) (x i32)) (f x))

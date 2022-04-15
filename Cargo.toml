@@ -4,7 +4,20 @@ version = "0.1.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[workspace]
+members = [
+  "ariadne"
+]
 
 [dependencies]
+anyhow = "1.0.56"
 binaryen = "0.12.1"
 chumsky = "0.8.0"
+salsa = "0.16.1"
+tokio = { version = "1.17.0", features = ["full"] }
+tower-lsp = "0.16.0"
+
+[dependencies.ariadne]
+version = "0.1.5"
+path = "ariadne"
+
