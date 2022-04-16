@@ -1,4 +1,4 @@
-(fn s ((x i32) (y i32) (z i32)) (x z (y z)))
+(fn s ((x (-> i32 i32 i32)) (y (-> i32 i32)) (z i32) i32) (x z (y z)))
 
 (fn k ((x i32) (y i32)) y)
 

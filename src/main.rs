@@ -2,6 +2,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use codegen::Codegen;
 use tokio::sync::Mutex;
 use tower_lsp::jsonrpc;
 use tower_lsp::lsp_types;
@@ -114,6 +115,7 @@ fn ariadne_source(db: &dyn SourceQuery, key: SourceId) -> Arc<ariadne::Source> {
     lexer::LexerStorage,
     ast::AstStorage,
     parser::ParserStorage,
+    codegen::CodegenStorage,
 )]
 #[derive(Default)]
 struct Database {
@@ -124,14 +126,24 @@ impl salsa::Database for Database {}
 struct Backend {
     client: Client,
     db: Arc<Mutex<Database>>,
-    open_docs: HashMap<std::path::PathBuf, SourceId>,
+    open_docs: Arc<Mutex<HashMap<std::path::PathBuf, SourceId>>>,
+}
+impl Backend {
+    fn new(client: Client, db: Arc<Mutex<Database>>) -> Self {
+        Self {
+            client,
+            db,
+            open_docs: Arc::new(Mutex::new(HashMap::new())),
+        }
+
+    }
 }
 
 #[tower_lsp::async_trait]
 impl LanguageServer for Backend {
     async fn initialize(
         &self,
-        params: lsp_types::InitializeParams,
+        _params: lsp_types::InitializeParams,
     ) -> jsonrpc::Result<lsp_types::InitializeResult>
     {
         let mut res = lsp_types::InitializeResult::default();
@@ -161,37 +173,53 @@ impl LanguageServer for Backend {
         params: lsp_types::DidOpenTextDocumentParams,
     ) -> () {
         let path = std::path::PathBuf::from(params.text_document.uri.path());
+        println!("{}", path.as_path().display());
         self.client.log_message(lsp_types::MessageType::WARNING,
-            format!("did open {}", path.display())).await;
+            format!("did open {}", path.as_path().display())).await;
 
         let db = self.db.lock().await;
-        let source_id = db.intern_source_data(SourceData { path, content: params.text_document.text });
-        self.open_docs.insert(path, source_id);
+        let source_id = db.intern_source_data(SourceData { 
+            path: path.clone(),
+            content: params.text_document.text 
+        });
+
+        self.open_docs.lock().await.insert(path, source_id); 
     } 
 
     async fn references(
         &self,
-        params: ReferenceParams,
+        _params: ReferenceParams,
     ) -> jsonrpc::Result<Option<Vec<lsp_types::Location>>> {
         Ok(None)
     }
 
-    async fn shutdown(
-        &self,
-    ) -> jsonrpc::Result<()>
-    {
+    async fn shutdown(&self) -> jsonrpc::Result<()> {
         Ok(())
     }
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let db = Arc::new(Mutex::new(Database::default()));
-    let stdin = tokio::io::stdin();
+    let mut db = Arc::new(Mutex::new(Database::default()));
+    /*let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
 
-    let (service, socket) = LspService::new(|client| Backend { client, db });
-    Server::new(stdin, stdout, socket).serve(service).await;
+    let (service, socket) = LspService::new(|client| Backend::new(client, db));
+    Server::new(stdin, stdout, socket).serve(service).await;*/
+
+    let path = std::path::PathBuf::from(std::env::args().nth(1).unwrap());
+    let content = std::fs::read_to_string(&path)?;
+    let mut db = db.lock().await;
+    let src_id = db.intern_source_data(SourceData { path, content });
+
+    let module= db.codegen(src_id);
+
+    let mod_bin = parity_wasm::serialize(module)?;
  
+    let wabt_buf = wabt::Wasm2Wat::new()
+        .convert(&mod_bin)?;
+
+    println!("{}", String::from_utf8(wabt_buf.as_ref().to_vec())?);
+
     Ok(())
 }

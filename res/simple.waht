@@ -1,0 +1,5 @@
+(fn k ((x i32) (y i32) i32) y)
+
+(fn i ((x i32) i32) x)
+
+(fn test ((x i32) i32) (k (i x) 3))

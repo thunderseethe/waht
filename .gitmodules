@@ -1,0 +1,3 @@
+[submodule "parity-wasm"]
+	path = parity-wasm
+	url = git@github.com:paritytech/parity-wasm.git

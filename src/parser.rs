@@ -109,22 +109,23 @@ fn fn_parser<'a>(
     let ident = select! {
         Token::Ident(l) => db.intern_ident_data(IdentData::new(l))
     };
-    let arg_list = ident
+    let fn_sig = ident
         .then(type_parser(db))
         .parens()
         .repeated()
+        .then(type_parser(db))
         .parens()
         .labelled("arg list")
         .boxed();
 
     just(Token::FnKw)
         .ignore_then(ident)
-        .then(arg_list)
+        .then(fn_sig)
         .then(expr_parser(db))
         .parens()
-        .map_with_span(|((name, args), body), meta| {
+        .map_with_span(|((name, (params, ret_ty)), body), meta| {
             db.intern_fn_defn(Node {
-                kind: FnDefn { name, args, body },
+                kind: FnDefn { name, params, ret_ty, body },
                 meta,
             })
         })
@@ -156,10 +157,10 @@ fn module_parser<'a>(
 
 #[salsa::query_group(ParserStorage)]
 pub trait ParserQuery: crate::ast::AstQuery + crate::lexer::Lexer {
-    fn parse(&self, key: crate::SourceId) -> Arc<Module>;
+    fn parse(&self, key: crate::SourceId) -> crate::ast::ModId;
 }
 
-fn parse(db: &dyn ParserQuery, key: crate::SourceId) -> Arc<Module> {
+fn parse(db: &dyn ParserQuery, key: crate::SourceId) -> crate::ast::ModId {
     let tokens = db.lex(key);
     let end = db.source_length(key);
     let mod_res = module_parser(db).parse(chumsky::Stream::from_iter(
@@ -167,7 +168,9 @@ fn parse(db: &dyn ParserQuery, key: crate::SourceId) -> Arc<Module> {
         tokens.iter().cloned(),
     ));
     match mod_res {
-        Ok(m) => Arc::new(m),
+        Ok(m) => {
+            db.intern_module(m)
+        },
         Err(e) => {
             let report = crate::build_report(&key, e);
             let cache = DbCache(db, None);
