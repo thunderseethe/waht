@@ -86,6 +86,11 @@ impl IdentData {
         Self(s.to_string())
     }
 }
+impl ToString for IdentData {
+    fn to_string(&self) -> String {
+        self.0.clone()
+    }
+}
 
 #[derive(PartialEq, Eq, Hash, Clone, Copy, Debug, PartialOrd, Ord)]
 pub struct IdentId(salsa::InternId);

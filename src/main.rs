@@ -216,7 +216,8 @@ async fn main() -> anyhow::Result<()> {
 
     let mod_bin = parity_wasm::serialize(module)?;
  
-    let wabt_buf = wabt::Wasm2Wat::new()
+    let wabt_buf = wabt::Wasm2Wat::new() 
+        .read_debug_names(true)
         .convert(&mod_bin)?;
 
     println!("{}", String::from_utf8(wabt_buf.as_ref().to_vec())?);

@@ -43,6 +43,7 @@ pub trait Codegen: AstQuery + ParserQuery {
     fn fn_codeloc(&self, mod_id: ast::ModId, ident_id: ast::IdentId) -> CodeLocation;
 
     fn mod_fns_signatures(&self, mod_id: ast::ModId) -> Vec<Signature>;
+    fn mod_names(&self, mod_id: ast::ModId) -> parity_wasm::elements::NameSection;
     fn expr_primop(&self, expr_id: ast::ExprId) -> Option<Instruction>;
     fn fn_params_wasm_ty(&self, fn_id: ast::FnId) -> Vec<ValueType>;
     fn fn_ret_wasm_ty(&self, fn_id: ast::FnId) -> ValueType;
@@ -75,7 +76,29 @@ fn codegen_mod(db: &dyn Codegen, mod_id: ast::ModId) -> parity_wasm::elements::M
             fn_id));
     }
 
-    module.build()
+    module
+        .with_section(parity_wasm::elements::Section::Name(db.mod_names(mod_id)))
+        .build()
+}
+
+fn mod_names(db: &dyn Codegen, mod_id: ast::ModId) -> parity_wasm::elements::NameSection {
+    let mut fns = parity_wasm::elements::FunctionNameSubsection::default();
+    let mut locals = parity_wasm::elements::LocalNameSubsection::default();
+    // This is precarious but should work?
+    for (fn_id, i) in db.mod_fns(mod_id).into_iter().zip(0u32..) {
+        fns.names_mut().insert(i, db.lookup_intern_ident_data(db.fn_name(fn_id)).to_string());
+
+        let local_map = db.fn_local_vars(fn_id).into_iter().zip(0u32..)
+            .map(|(id, idx)| (idx, db.lookup_intern_ident_data(id).to_string()))
+            .collect::<parity_wasm::elements::NameMap>();
+        locals.local_names_mut().insert(i, local_map);
+    }
+
+    parity_wasm::elements::NameSection::new(
+        None,
+        Some(fns),
+        Some(locals)
+    )
 }
 
 fn mod_fns_signatures(db: &dyn Codegen, mod_id: ast::ModId) -> Vec<Signature> {
@@ -109,7 +132,6 @@ fn codegen_fn_body(
     let locals = parity_wasm::elements::Local::new(local_ids.len() as u32, ValueType::I32);
 
     let local_env = local_ids.into_iter().zip(0u32..).collect::<HashMap<_, _>>();
-
 
     let mut ins = body_instructions(db, env, &local_env, body_id);
     ins.push(Instruction::End);
