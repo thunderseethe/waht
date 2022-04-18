@@ -119,6 +119,7 @@ fn codegen_fn(
     FunctionBuilder::new()
         .with_signature(sig)
         .with_body(codegen_fn_body(db, env, fn_id))
+        .with_main(db.fn_name(fn_id) == db.intern_ident_data(ast::IdentData::new("main")))
         .build()
 }
 

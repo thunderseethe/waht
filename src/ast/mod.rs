@@ -1,72 +1,16 @@
-use std::{collections::{HashSet, BTreeSet, BTreeMap}, sync::Arc};
+use std::{collections::BTreeSet, sync::Arc};
 
-use crate::SourceId;
-
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct Span {
-    source_id: SourceId,
-    start: usize,
-    end: usize,
-}
-impl std::ops::Add for Span {
-    type Output = Span;
-
-    fn add(self, rhs: Span) -> Span {
-        assert_eq!(self.source_id, rhs.source_id);
-        Self {
-            start: self.start.min(rhs.start),
-            end: self.end.max(rhs.end),
-            ..self
-        }
-    }
-}
-impl chumsky::Span for Span {
-    type Context = SourceId;
-    type Offset = usize;
-
-    fn new(context: Self::Context, range: std::ops::Range<Self::Offset>) -> Self {
-        Self {
-            source_id: context,
-            start: range.start,
-            end: range.end,
-        }
-    }
-
-    fn context(&self) -> Self::Context {
-        self.source_id
-    }
-
-    fn start(&self) -> Self::Offset {
-        self.start
-    }
-
-    fn end(&self) -> Self::Offset {
-        self.end
-    }
-}
-impl ariadne::Span for Span {
-    type SourceId = SourceId;
-
-    fn source(&self) -> &Self::SourceId {
-        &self.source_id
-    }
-
-    fn start(&self) -> usize {
-        self.start
-    }
-
-    fn end(&self) -> usize {
-        self.end
-    }
-}
+mod span;
+pub use span::Span;
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub struct Module {
     pub fns: Vec<FnId>,
+    pub exports: Vec<IdentId>,
 }
 impl Module {
     pub fn empty() -> Self {
-        Module { fns: Vec::new() }
+        Module { fns: Vec::new(), exports: Vec::new() }
     }
 }
 
@@ -145,6 +89,8 @@ pub trait AstQuery {
     #[salsa::interned]
     fn intern_ident_data(&self, id_data: IdentData) -> IdentId;
 
+    fn main_id(&self) -> IdentId;
+
     fn ident_is_primitive(&self, id: IdentId) -> bool;
     fn ident_primtive(&self, id: IdentId) -> Option<parity_wasm::elements::Instruction>;
 
@@ -174,6 +120,10 @@ pub trait AstQuery {
     fn intern_module(&self, module: Module) -> ModId;
 
     fn mod_fns(&self, mod_id: ModId) -> Vec<FnId>;
+}
+
+pub fn main_id(db: &dyn AstQuery) -> IdentId {
+    db.intern_ident_data(IdentData::new("main"))
 }
 
 /// Returns true if this identifier is a primitive and builtin to the language
