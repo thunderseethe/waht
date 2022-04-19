@@ -50,6 +50,15 @@ pub struct SourceData {
     path: std::path::PathBuf,
     content: std::string::String,
 }
+impl SourceData {
+
+    fn new<P: Into<std::path::PathBuf>, S: ToString>(path: P, content: S) -> Self {
+        Self {
+            path: path.into(),
+            content: content.to_string(),
+        }
+    }
+}
 impl TryFrom<&std::path::Path> for SourceData 
 {
     type Error = std::io::Error;
@@ -200,7 +209,7 @@ impl LanguageServer for Backend {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let mut db = Arc::new(Mutex::new(Database::default()));
+    let db = Arc::new(Mutex::new(Database::default()));
     /*let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
 
@@ -209,18 +218,23 @@ async fn main() -> anyhow::Result<()> {
 
     let path = std::path::PathBuf::from(std::env::args().nth(1).unwrap());
     let content = std::fs::read_to_string(&path)?;
-    let mut db = db.lock().await;
+    let wasm_out = path.with_extension("wasm");
+    let wat_out = path.with_extension("wat");
+
+    let db = db.lock().await;
     let src_id = db.intern_source_data(SourceData { path, content });
 
     let module= db.codegen(src_id);
 
     let mod_bin = parity_wasm::serialize(module)?;
- 
+
+    std::fs::write(wasm_out, &mod_bin)?;
+
     let wabt_buf = wabt::Wasm2Wat::new() 
         .read_debug_names(true)
         .convert(&mod_bin)?;
 
-    println!("{}", String::from_utf8(wabt_buf.as_ref().to_vec())?);
+    std::fs::write(wat_out, String::from_utf8(wabt_buf.as_ref().to_vec())?)?;
 
     Ok(())
 }

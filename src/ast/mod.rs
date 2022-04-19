@@ -30,6 +30,16 @@ impl IdentData {
         Self(s.to_string())
     }
 }
+impl From<&str> for IdentData {
+    fn from(s: &str) -> Self {
+        IdentData::new(s)
+    }
+}
+impl From<String> for IdentData {
+    fn from(s: String) -> Self {
+        IdentData::new(s)
+    }
+}
 impl ToString for IdentData {
     fn to_string(&self) -> String {
         self.0.clone()
@@ -46,6 +56,7 @@ pub struct FnDefn {
     pub params: Vec<(IdentId, TypeId)>,
     pub ret_ty: TypeId,
     pub body: ExprId,
+    pub export: bool,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
@@ -112,6 +123,7 @@ pub trait AstQuery {
     fn fn_params(&self, fn_id: FnId) -> Vec<(IdentId, TypeId)>;
     fn fn_ret(&self, fn_id: FnId) -> TypeId;
     fn fn_name(&self, fn_id: FnId) -> IdentId;
+    fn fn_export(&self, fn_id: FnId) -> bool;
 
 
     fn fn_local_vars(&self, fn_id: FnId) -> Vec<IdentId>;
@@ -200,6 +212,9 @@ pub fn fn_ret(db: &dyn AstQuery, fn_id: FnId) -> TypeId {
 }
 pub fn fn_name(db: &dyn AstQuery, fn_id: FnId) -> IdentId {
     db.lookup_intern_fn_defn(fn_id).kind.name
+}
+pub fn fn_export(db: &dyn AstQuery, fn_id: FnId) -> bool {
+    db.lookup_intern_fn_defn(fn_id).kind.export
 }
 
 pub fn fn_local_vars(db: &dyn AstQuery, fn_id: FnId) -> Vec<IdentId> {

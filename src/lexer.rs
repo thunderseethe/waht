@@ -14,6 +14,7 @@ pub enum Token {
     FnArrow,
     // Keywords
     FnKw,
+    ExportKw,
 }
 
 use std::fmt;
@@ -28,6 +29,7 @@ impl fmt::Display for Token {
             RParen => write!(f, ")"),
             FnArrow => write!(f, "->"),
             FnKw => write!(f, "fn"),
+            ExportKw => write!(f, "export"),
         }
     }
 }
@@ -58,6 +60,7 @@ pub fn lexer(key: SourceId) -> impl Parser<char, Vec<(Token, Span)>, Error=Simpl
 
     let ident = text::ident().map(|ident: String| match ident.as_str() {
         "fn" => Token::FnKw,
+        "export" => Token::ExportKw,
         _ => Token::Ident(ident),
     });
     

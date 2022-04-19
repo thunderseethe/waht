@@ -64,6 +64,17 @@ fn expr_parser<'a>(
     .boxed()
 }
 
+fn optional<I, O, P: chumsky::Parser<I, O>>(p: P) -> impl Parser<I, Option<O>, Error=P::Error> 
+where
+    I: Clone,
+    O: Clone,
+{
+    choice((
+        p.map(Some),
+        empty().to(None)
+    ))
+}
+
 fn type_parser<'a>(
     db: &'a dyn AstQuery,
 ) -> impl Parser<Token, TypeId, Error = Simple<Token, Span>> + 'a {
@@ -118,14 +129,18 @@ fn fn_parser<'a>(
         .labelled("arg list")
         .boxed();
 
-    just(Token::FnKw)
-        .ignore_then(ident)
+        choice((
+            just(Token::ExportKw).to(true),
+            empty().to(false)
+        )) 
+        .then_ignore(just(Token::FnKw))
+        .then(ident)
         .then(fn_sig)
         .then(expr_parser(db))
         .parens()
-        .map_with_span(|((name, (params, ret_ty)), body), meta| {
+        .map_with_span(|(((export, name), (params, ret_ty)), body), meta| {
             db.intern_fn_defn(Node {
-                kind: FnDefn { name, params, ret_ty, body },
+                kind: FnDefn { name, params, ret_ty, body, export },
                 meta,
             })
         })
@@ -195,50 +210,94 @@ impl<'d> ariadne::Cache<SourceId> for DbCache<'d> {
         )))
     }
 }
-/*
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::{Expr::*, IdentData};
-
-    fn parse_with<T, E>(p: impl Parser<Token, T, Error=E>, input: &str) -> Result<T, Vec<E>>
-    where
-        E: chumsky::Error<Token, Span=Span>,
-    {
-        let end = input.len();
-        let tokens = lexer().parse(input).map_err(|_| vec![])?;
-
-        let stream/*: chumsky::Stream<'_, Token, Span, std::vec::IntoIter<(Token, Span)>>*/ = chumsky::Stream::from_iter(end..end + 1, tokens.into_iter());
-
-        p.parse(stream)
-    }
+    use std::path::PathBuf;
+    use crate::{ast::Expr::*, SourceQuery, SourceData};
 
     #[test]
     fn parse_lit_i32() {
-        assert_eq!(parse_with(expr_parser(), "3"), Ok(Expr::Li32(3)))
+        let db = crate::Database::default();
+        let src_id = db.intern_source_data(SourceData::new("/interactive", "(fn three (i32) 3)"));
+        
+        let mod_id = db.parse(src_id);
+        let mods = db.lookup_intern_module(mod_id);
+        let fun = db.lookup_intern_fn_defn(mods.fns[0]);
+        let body = db.lookup_intern_expr_node(fun.kind.body);
+        assert_eq!(body.kind, Li32(3));
     }
 
     #[test]
     fn parse_lit_str() {
-        assert_eq!(parse_with(expr_parser(), "\"a str lit\""), Ok(Expr::LStr("a str lit".to_string())))
+        let db = crate::Database::default();
+        let src_id = db.intern_source_data(SourceData::new("/interactive", 
+            "(fn a (i32) \"a str lit\")"));
+        let mod_id = db.parse(src_id);
+        let module = db.lookup_intern_module(mod_id);
+        assert_eq!(
+            db.lookup_intern_expr_node(db.lookup_intern_fn_defn(module.fns[0]).kind.body).kind,
+            LStr("a str lit".to_owned()));
     }
 
     #[test]
     fn parse_var() {
-        assert_eq!(parse_with(expr_parser(), "a_var"), Ok(var!("a_var")))
+        let db = crate::Database::default();
+        let src_id = db.intern_source_data(SourceData { 
+            path: PathBuf::from("/interactive"),
+            content: "(fn name (i32) a_var)".to_owned() 
+        });
+        let mod_id = db.parse(src_id);
+        let fun = db.lookup_intern_fn_defn(db.lookup_intern_module(mod_id).fns[0]);
+        assert_eq!(db.lookup_intern_ident_data(fun.kind.name).to_string(), "name");
+        assert_eq!(fun.kind.params, vec![]);
+        assert!(matches!(db.lookup_intern_expr_node(fun.kind.body).kind, Var(i) if db.lookup_intern_ident_data(i) == "a_var".into()));
     }
 
     #[test]
     fn parse_control_as_var() {
-        assert_eq!(parse_with(expr_parser(), "+"), Ok(var!("+")));
-        assert_eq!(parse_with(expr_parser(), "<$>"), Ok(var!("<$>")))
+        let db = crate::Database::default();
+        let source_id = db.intern_source_data(SourceData::new(
+            "/interactive",
+            concat!(
+                "(fn + ((x i32) (y i32) i32) (+ x y))",
+                "(fn <$> ((f (-> i32 i32)) (x i32) i32) (f x))"
+            ),
+        ));
+        let mod_id = db.parse(source_id);
+        let module = db.lookup_intern_module(mod_id);
+
+        let plus_expr = db.lookup_intern_fn_defn(module.fns[0]);
+        assert_eq!(db.lookup_intern_ident_data(plus_expr.kind.name), IdentData::new("+"));
+
+        let fmap_expr = db.lookup_intern_fn_defn(module.fns[1]);
+        assert_eq!(db.lookup_intern_ident_data(fmap_expr.kind.name), IdentData::new("<$>"));
     }
 
-    #[test]
+    /*#[test]
     fn parse_sexpr() {
-        assert_eq!(parse_with(expr_parser(), "(+ 1 2 3)"), Ok(sexpr![var!("+"), Li32(1), Li32(2), Li32(3)]))
-    }
+        let db = crate::Database::default();
+        let src_id = db.intern_source_data(SourceData::new(
+            "/interactive",
+            "(fn sum (i32) (+ 1 2 3))",
+        ));
+  
+        let mod_id = db.parse(src_id);
+        let mods = db.lookup_intern_module(mod_id);
+        let fun = db.lookup_intern_fn_defn(mods.fns[0]);
+        let body = db.lookup_intern_expr_node(fun.kind.body);
+        let sexprs = match body.kind {
+            Sexpr(exprs) => {
+                exprs.into_iter()
+                    .map(|e| db.lookup_intern_expr_node(e))
+                    .collect::<Vec<_>>()
+            },
+            _ => {panic!("Expect sexpr body")},
+        };
+    }*/
 
+    /*
     #[test]
     fn parse_fn() {
         assert_eq!(parse_with(fn_parser(), "(fn id ((x i32)) x)"), Ok(FnDefn {
@@ -246,6 +305,5 @@ mod tests {
             args: vec![(IdentData::new("x"), Type::Ti32)],
             body: var!("x"),
         }))
-    }
+    } */
 }
-*/

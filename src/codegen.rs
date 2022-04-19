@@ -69,11 +69,20 @@ fn codegen_mod(db: &dyn Codegen, mod_id: ast::ModId) -> parity_wasm::elements::M
         .map(|(id, call)| (db.fn_name(*id), call)).collect();
 
     for (fn_id, sig) in db.mod_fns(mod_id).into_iter().zip(sigs) {
-        module.push_function(codegen_fn(
+        let loc = module.push_function(codegen_fn(
             db,
             &env,
             sig,
             fn_id));
+        
+        if db.fn_export(fn_id) {
+            use parity_wasm::elements::{ExportEntry, Internal};
+            let export_entry = 
+                ExportEntry::new(
+                    db.lookup_intern_ident_data(db.fn_name(fn_id)).to_string(),
+                    Internal::Function(loc.signature));
+            module.push_export(export_entry);
+        }
     }
 
     module
