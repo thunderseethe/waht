@@ -11,6 +11,15 @@ members = [
   "parity-wasm/testsuite"
 ]
 
+[lib]
+name = "waht"
+
+[[bin]]
+name = "wahtc"
+
+[[bin]]
+name = "wahtlsp"
+
 [dependencies]
 anyhow = "1.0.56"
 chumsky = "0.8.0"

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::ast::Span;
+use crate::{ast::Span, SourceId};
 use chumsky::prelude::*;
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
@@ -84,8 +84,6 @@ pub fn lexer(key: SourceId) -> impl Parser<char, Vec<(Token, Span)>, Error=Simpl
         .repeated()
         .boxed()
 }
-
-use crate::SourceId;
 
 #[salsa::query_group(LexerStorage)]
 pub trait Lexer: crate::SourceQuery { 

@@ -38,8 +38,8 @@ where
 
 fn expr_parser<'a>(
     db: &'a dyn AstQuery,
-) -> impl Parser<Token, ExprId, Error = Simple<Token, Span>> + 'a {
-    recursive(|expr: Recursive<Token, ExprId, Simple<Token, Span>>| {
+) -> impl Parser<Token, ExprNode<Span>, Error = Simple<Token, Span>> + 'a {
+    recursive(|expr: Recursive<Token, ExprNode<Span>, Simple<Token, Span>>| {
         let val = select! {
             Token::NumLit(num) => Expr::Li32(num as i32),
             Token::StrLit(str) => Expr::LStr(str),
@@ -59,64 +59,50 @@ fn expr_parser<'a>(
             .boxed();
 
         val.or(sexpr)
-            .map_with_span(|kind, meta| db.intern_expr_node(Node { kind, meta }))
+            .map_with_span(|kind, meta| Node { kind: db.intern_expr_data(kind), meta })
     })
     .boxed()
 }
 
-fn optional<I, O, P: chumsky::Parser<I, O>>(p: P) -> impl Parser<I, Option<O>, Error=P::Error> 
-where
-    I: Clone,
-    O: Clone,
-{
-    choice((
-        p.map(Some),
-        empty().to(None)
-    ))
-}
-
 fn type_parser<'a>(
     db: &'a dyn AstQuery,
-) -> impl Parser<Token, TypeId, Error = Simple<Token, Span>> + 'a {
+) -> impl Parser<Token, TypeNode<Span>, Error = Simple<Token, Span>> + 'a {
     let atom_ty = filter_map(|span: Span, t| match t {
-        Token::Ident(s) if s == "i32" => Ok((Type::Ti32, span)),
+        Token::Ident(s) if s == "i32" => Ok(Node { kind: db.intern_type_data(Type::Ti32), meta: span }),
         _ => Err(Simple::custom(span, "Expected type to be one of { i32 }")),
     })
     .labelled("atomic type");
 
     let typ = just(Token::FnArrow)
-        .ignore_then(atom_ty)
-        .then(atom_ty.repeated().at_least(1))
-        .map(|(a, b)| (b, a))
-        .foldr(|(param, param_span), (ret, ret_span)| {
-            let param_id = db.intern_type_node(Node {
-                kind: param,
-                meta: param_span.into(),
-            });
-            let ret_id = db.intern_type_node(Node {
-                kind: ret,
-                meta: ret_span.into(),
-            });
-            (Type::TFun(param_id, ret_id), param_span + ret_span)
-        })
+        .ignore_then(atom_ty.repeated().parens())
+        .then(atom_ty)
+        .map(|(params, ret)| {
+            let mut span: Span = ret.meta;
+            let params = params.into_iter()
+                .map(|param| { span += param.meta; param.kind })
+                .collect();
+            Node {
+                kind: db.intern_type_data(Type::TFun { params, ret: ret.kind }),
+                meta: span,
+            }
+        }) 
         .parens()
         .labelled("function type")
         .recover_with(nested_delimiters(
             Token::LParen,
             Token::RParen,
             [],
-            |span| (Type::THole, span),
+            |span| Node { kind: db.intern_type_data(Type::THole), meta: span },
         ))
         .boxed();
 
     typ.or(atom_ty)
-        .map(|(kind, meta)| db.intern_type_node(Node { kind, meta }))
         .boxed()
 }
 
 fn fn_parser<'a>(
     db: &'a dyn AstQuery,
-) -> impl Parser<Token, FnId, Error = Simple<Token, Span>> + 'a {
+) -> impl Parser<Token, FnDefnNode<Span>, Error = Simple<Token, Span>> + 'a {
     let ident = select! {
         Token::Ident(l) => db.intern_ident_data(IdentData::new(l))
     };
@@ -139,10 +125,10 @@ fn fn_parser<'a>(
         .then(expr_parser(db))
         .parens()
         .map_with_span(|(((export, name), (params, ret_ty)), body), meta| {
-            db.intern_fn_defn(Node {
-                kind: FnDefn { name, params, ret_ty, body, export },
+            Node {
+                kind: db.intern_fn_data( FnDefn { name, params, ret_ty, body, export }),
                 meta,
-            })
+            }
         })
         .labelled("function")
         .boxed()
@@ -150,7 +136,7 @@ fn fn_parser<'a>(
 
 #[derive(PartialEq, Debug)]
 pub enum ParseDefn {
-    Function(FnId),
+    Function(FnDefnNode<Span>),
 }
 
 fn module_parser<'a>(
@@ -211,6 +197,7 @@ impl<'d> ariadne::Cache<SourceId> for DbCache<'d> {
     }
 }
 
+/* 
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -224,8 +211,8 @@ mod tests {
         
         let mod_id = db.parse(src_id);
         let mods = db.lookup_intern_module(mod_id);
-        let fun = db.lookup_intern_fn_defn(mods.fns[0]);
-        let body = db.lookup_intern_expr_node(fun.kind.body);
+        let fun = db.lookup_intern_fn_data(mods.fns[0].kind);
+        let body = db.lookup_intern_expr_data(fun.body.kind);
         assert_eq!(body.kind, Li32(3));
     }
 
@@ -307,3 +294,4 @@ mod tests {
         }))
     } */
 }
+*/

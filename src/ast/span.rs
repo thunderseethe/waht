@@ -11,12 +11,19 @@ impl std::ops::Add for Span {
     type Output = Span;
 
     fn add(self, rhs: Span) -> Span {
-        assert_eq!(self.source_id, rhs.source_id);
+        debug_assert_eq!(self.source_id, rhs.source_id);
         Self {
             start: self.start.min(rhs.start),
             end: self.end.max(rhs.end),
             ..self
         }
+    }
+}
+impl std::ops::AddAssign for Span {
+    fn add_assign(&mut self, rhs: Self) {
+        debug_assert_eq!(self.source_id, rhs.source_id);
+        self.start = self.start.min(rhs.start);
+        self.end = self.end.max(rhs.end);
     }
 }
 impl chumsky::Span for Span {

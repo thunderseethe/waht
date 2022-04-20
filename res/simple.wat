@@ -6,5 +6,4 @@
     local.get 1)
   (func $i (type 1) (param $x i32) (result i32)
     (local i32)
-    local.get 0)
-  (export "k" (func 0)))
+    local.get 0))

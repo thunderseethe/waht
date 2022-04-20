@@ -5,21 +5,21 @@ pub use span::Span;
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub struct Module {
-    pub fns: Vec<FnId>,
-    pub exports: Vec<IdentId>,
+    pub fns: Vec<FnDefnNode<Span>>,
 }
 impl Module {
     pub fn empty() -> Self {
-        Module { fns: Vec::new(), exports: Vec::new() }
+        Module { fns: Vec::new() }
     }
 }
 
 #[derive(PartialEq, Eq, Debug, Hash, Clone)]
 pub enum Type {
     THole,
+    TUnit,
     Ti32,
     // Should make this more wasm-y eventually
-    TFun(TypeId, TypeId),
+    TFun { params: Vec<TypeId>, ret: TypeId },
 }
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
@@ -53,9 +53,9 @@ crate::impl_intern_key!(IdentId);
 #[derive(PartialEq, Eq, Debug, Hash, Clone)]
 pub struct FnDefn {
     pub name: IdentId,
-    pub params: Vec<(IdentId, TypeId)>,
-    pub ret_ty: TypeId,
-    pub body: ExprId,
+    pub params: Vec<(IdentId, TypeNode<Span>)>,
+    pub ret_ty: TypeNode<Span>,
+    pub body: ExprNode<Span>,
     pub export: bool,
 }
 
@@ -65,7 +65,7 @@ pub enum Expr {
     Li32(i32),
     LStr(String),
     Var(IdentId),
-    Sexpr(Vec<ExprId>),
+    Sexpr(Vec<ExprNode<Span>>),
 }
 
 #[derive(PartialEq, Eq, Hash, Clone, Copy, Debug)]
@@ -91,9 +91,9 @@ pub struct Node<K, M = ()> {
     pub meta: M,
 }
 
-pub type TypeNode<M = ()> = Node<Type, M>;
-pub type ExprNode<M = ()> = Node<Expr, M>;
-pub type FnDefnNode<M = ()> = Node<FnDefn, M>;
+pub type TypeNode<M = ()> = Node<TypeId, M>;
+pub type ExprNode<M = ()> = Node<ExprId, M>;
+pub type FnDefnNode<M = ()> = Node<FnId, M>;
 
 #[salsa::query_group(AstStorage)]
 pub trait AstQuery {
@@ -106,22 +106,19 @@ pub trait AstQuery {
     fn ident_primtive(&self, id: IdentId) -> Option<parity_wasm::elements::Instruction>;
 
     #[salsa::interned]
-    fn intern_expr_node(&self, expr: ExprNode<Span>) -> ExprId;
-
-    fn expr_kind(&self, expr: ExprId) -> Expr;
-    fn expr_span(&self, expr: ExprId) -> Span;
+    fn intern_expr_data(&self, expr: Expr) -> ExprId;
 
     fn expr_bindings(&self, bound: Arc<BTreeSet<IdentId>>, expr: ExprId) -> Bindings;
 
     #[salsa::interned]
-    fn intern_type_node(&self, typ: TypeNode<Span>) -> TypeId;
+    fn intern_type_data(&self, typ: Type) -> TypeId;
 
     #[salsa::interned]
-    fn intern_fn_defn(&self, defn: FnDefnNode<Span>) -> FnId;
+    fn intern_fn_data(&self, defn: FnDefn) -> FnId;
 
-    fn fn_body(&self, fn_id: FnId) -> ExprId;
-    fn fn_params(&self, fn_id: FnId) -> Vec<(IdentId, TypeId)>;
-    fn fn_ret(&self, fn_id: FnId) -> TypeId;
+    fn fn_body(&self, fn_id: FnId) -> ExprNode<Span>;
+    fn fn_params(&self, fn_id: FnId) -> Vec<(IdentId, TypeNode<Span>)>;
+    fn fn_ret(&self, fn_id: FnId) -> TypeNode<Span>;
     fn fn_name(&self, fn_id: FnId) -> IdentId;
     fn fn_export(&self, fn_id: FnId) -> bool;
 
@@ -131,7 +128,7 @@ pub trait AstQuery {
     #[salsa::interned]
     fn intern_module(&self, module: Module) -> ModId;
 
-    fn mod_fns(&self, mod_id: ModId) -> Vec<FnId>;
+    fn mod_fns(&self, mod_id: ModId) -> Vec<FnDefnNode<Span>>;
 }
 
 pub fn main_id(db: &dyn AstQuery) -> IdentId {
@@ -165,13 +162,6 @@ pub fn ident_primtive(db: &dyn AstQuery, id: IdentId) -> Option<parity_wasm::ele
     }
 }
 
-pub fn expr_kind(db: &dyn AstQuery, id: ExprId) -> Expr {
-    db.lookup_intern_expr_node(id).kind
-}
-
-pub fn expr_span(db: &dyn AstQuery, id: ExprId) -> Span {
-    db.lookup_intern_expr_node(id).meta
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Bindings {
@@ -179,17 +169,17 @@ pub struct Bindings {
     bound: Arc<BTreeSet<IdentId>>,
 }
 pub fn expr_bindings(db: &dyn AstQuery, bound: Arc<BTreeSet<IdentId>>, id: ExprId) -> Bindings {
-    let mut bound: BTreeSet<IdentId> = bound.iter().cloned().collect();
+    let bound: BTreeSet<IdentId> = bound.iter().cloned().collect();
     let mut free: BTreeSet<IdentId> = BTreeSet::new();
     let mut exprs: Vec<ExprId> = vec![id];
     while let Some(expr) = exprs.pop() {
-        match db.expr_kind(expr) {
+        match db.lookup_intern_expr_data(expr) {
             Expr::Error => panic!("Error expr"),
             Expr::Var(id) => if !bound.contains(&id) {
                 free.insert(id);
             },
             Expr::Sexpr(children) => {
-                exprs.extend(children);
+                exprs.extend(children.into_iter().map(|n| n.kind));
             },
             _ => {/* These expressions don't affect bindings */},
         }
@@ -201,32 +191,32 @@ pub fn expr_bindings(db: &dyn AstQuery, bound: Arc<BTreeSet<IdentId>>, id: ExprI
 }
 
 
-pub fn fn_body(db: &dyn AstQuery, fn_id: FnId) -> ExprId {
-    db.lookup_intern_fn_defn(fn_id).kind.body
+pub fn fn_body(db: &dyn AstQuery, fn_id: FnId) -> ExprNode<Span> {
+    db.lookup_intern_fn_data(fn_id).body
 }
-pub fn fn_params(db: &dyn AstQuery, fn_id: FnId) -> Vec<(IdentId, TypeId)> {
-    db.lookup_intern_fn_defn(fn_id).kind.params
+pub fn fn_params(db: &dyn AstQuery, fn_id: FnId) -> Vec<(IdentId, TypeNode<Span>)> {
+    db.lookup_intern_fn_data(fn_id).params
 }
-pub fn fn_ret(db: &dyn AstQuery, fn_id: FnId) -> TypeId {
-    db.lookup_intern_fn_defn(fn_id).kind.ret_ty
+pub fn fn_ret(db: &dyn AstQuery, fn_id: FnId) -> TypeNode<Span> {
+    db.lookup_intern_fn_data(fn_id).ret_ty
 }
 pub fn fn_name(db: &dyn AstQuery, fn_id: FnId) -> IdentId {
-    db.lookup_intern_fn_defn(fn_id).kind.name
+    db.lookup_intern_fn_data(fn_id).name
 }
 pub fn fn_export(db: &dyn AstQuery, fn_id: FnId) -> bool {
-    db.lookup_intern_fn_defn(fn_id).kind.export
+    db.lookup_intern_fn_data(fn_id).export
 }
 
 pub fn fn_local_vars(db: &dyn AstQuery, fn_id: FnId) -> Vec<IdentId> {
     let params: BTreeSet<IdentId> =
         db.fn_params(fn_id).into_iter().map(|(id, _)| id).collect();
 
-    let bindings = db.expr_bindings(Arc::new(params), db.fn_body(fn_id));
+    let bindings = db.expr_bindings(Arc::new(params), db.fn_body(fn_id).kind);
     // In wasm params are considered locals
     // The order here matters because it decides there index later on and params are automatically at the start of locals
     bindings.bound.iter().cloned().collect()
 }
 
-pub fn mod_fns(db: &dyn AstQuery, mod_id: ModId) -> Vec<FnId> {
+pub fn mod_fns(db: &dyn AstQuery, mod_id: ModId) -> Vec<FnDefnNode<Span>> {
     db.lookup_intern_module(mod_id).fns
 }
